@@ -283,6 +283,18 @@ lazy val actorsReactorsBenchmarks = (project in file("benchmarks/actors-reactors
     ProjectRef(uri("benchmarks/actors-reactors/reactors"), "reactorsCoreJVM")
   )
 
+lazy val disruptorBenchmarks = (project in file("benchmarks/disruptor"))
+  .settings(
+    name := "disruptor",
+    commonSettingsNoScala,
+    libraryDependencies ++= Seq(
+      "com.lmax" % "disruptor" % "4.0.0",
+      "org.agrona" % "agrona" % "2.4.0",
+      "com.google.guava" % "guava" % guavaVersion
+    )
+  )
+  .dependsOn(renaissanceCore % "provided")
+
 //
 
 val sparkVersion = "3.5.3"
@@ -667,6 +679,7 @@ val renaissanceBenchmarks: Seq[Project] = Seq(
   dummyBenchmarks,
   actorsAkkaBenchmarks,
   actorsReactorsBenchmarks,
+  disruptorBenchmarks,
   apacheSparkBenchmarks,
   databaseBenchmarks,
   jdkConcurrentBenchmarks,
