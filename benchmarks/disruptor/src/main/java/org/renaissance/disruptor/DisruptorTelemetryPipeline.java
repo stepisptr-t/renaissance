@@ -25,14 +25,14 @@ import static org.renaissance.BenchmarkResult.Validators.*;
 @Group("concurrency")
 @Summary("High-throughput telemetry trend analysis pipeline.")
 @Licenses(License.APACHE2)
-@Parameter(name = "event_count", defaultValue = "1000000", summary = "Total number of full telemetry events to process.")
-@Parameter(name = "ring_size", defaultValue = "65536", summary = "Size of the Disruptor RingBuffer (must be power of 2).")
-@Parameter(name = "producer_threads", defaultValue = "$cpu.count", summary = "Number of parallel producer threads.")
-@Configuration(name = "test", settings = {"event_count = 50000"})
+@Parameter(name = "producer_threads", defaultValue = "3", summary = "Number of concurrent producer threads.")
+@Parameter(name = "events_per_producer", defaultValue = "3000000", summary = "Number of events to produce per producer thread.")
+@Parameter(name = "ring_size", defaultValue = "131072", summary = "Size of the LMAX Disruptor RingBuffer (must be power of 2).")
+@Configuration(name = "test", settings = {"events_per_producer = 50000"})
 public final class DisruptorTelemetryPipeline implements Benchmark {
 
     // workload parameters
-    private int eventCount;
+    private int eventsPerProducer;
     private int ringSize;
     private int producerCount;
 
@@ -56,11 +56,11 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
 
     @Override
     public void setUpBeforeAll(BenchmarkContext context) {
-        eventCount = context.parameter("event_count").toPositiveInteger();
+        eventsPerProducer = context.parameter("events_per_producer").toPositiveInteger();
         ringSize = context.parameter("ring_size").toPositiveInteger();
         producerCount = Math.max(1, context.parameter("producer_threads").toPositiveInteger());
 
-        int maxSamples = (eventCount / DataSampleHandler.SAMPLE_FRQCY) + 1;
+        int maxSamples = (((eventsPerProducer * producerCount) / PartialEventType.values().length) / DataSampleHandler.SAMPLE_FRQCY) + 1;
         sampleStore = new TelemetrySampleStorage(maxSamples);
     }
 
@@ -101,9 +101,9 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
         int producerTypesCount = PartialEventType.values().length;
         int producersPerType = Math.max(1, producerCount / producerTypesCount);
         int totalProducers = producersPerType * producerTypesCount;
-        long partialEventsPerProducer = eventCount / producersPerType;
+        long partialEventsPerProducer = eventsPerProducer;
 
-        long expectedAggregatedEvents = partialEventsPerProducer * producersPerType;
+        long expectedAggregatedEvents = (long) eventsPerProducer * producersPerType;
 
         final CountDownLatch latch = new CountDownLatch(totalProducers);
 

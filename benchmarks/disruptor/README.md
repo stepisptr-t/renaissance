@@ -29,14 +29,14 @@ disruptor.handleEventsWith(new AssemblerHandler(ringSize))
 Each of these pipeline stages (or Handlers as Disruptor calls them) are running in its own separate thread created by the `DaemonThreadFactory` JDK thread factory, which is specified in the Disruptor constructor.
 
  - `TelemetryProducer` serves as a producer of data in a its own thread. Each producer produces `TelemetryEvent`s containing either one of `DataSourceID`, `torques` or `temperatures`. 
-    - The `producer_threads` parameter is used to split the producers equally for each of the types of partial events. It also influences the total number of producer threads. The `event_count` parameter value is split between each of the producer of the given partial event type.
+     - The `producer_threads` parameter is used to split the producers equally for each of the types of partial events. It also influences the total number of producer threads. The `events_per_producer` parameter value controls the number of events per producer thread.
         ```java
         int producerTypesCount = PartialEventType.values().length;
         int producersPerType = Math.max(1, producerCount / producerTypesCount);
         int totalProducers = producersPerType * producerTypesCount;
-        long partialEventsPerProducer = eventCount / producersPerType;
+        long partialEventsPerProducer = eventsPerProducer;
         ```
-    - Each data point is identified with a specific ObservationID. For simplification, it is guaranteed that each observation ID contains all DataSourceID, torques and temperatures.
+     - Each data point is identified with a specific ObservationID. For simplification, it is guaranteed that each observation ID contains all DataSourceID, torques and temperatures.
  - `AssemblerHandler` holds a stateful map of incoming partial events and publishes the full event to the next handler only once all three pieces for the given observation id arrive.
     - for the sake of simplification, we are ignoring the possible memory leaks in a production environment where either of the partial events is not actually recevied. Could be solved by using a LRU-like embedded linked list of oldest arrived events and have an O(1) stale events removal, but I did not want to complicate it too much. 
  - `AnomalyDetectionHandler` calculates a RMS for each DataSourceID observed and if the value, which was just observed crosses a certain percentage threshold from the baseline, it tags the event as anomaly.
@@ -59,14 +59,14 @@ The LMAX Disruptor library and agrona (for low level containers and utilities), 
 
 #### Workload scaling
 
-- `event_count` - Total number of full telemetry events to process. 
-    - This is actually the number of partial events per producer type, because we are producing 3 partial events in the producers and then assembling them into the full TelemetryEvent instance in the AssemblerHandler. 
-    - Bigger value results in longer runtime.
-- `ring_size` - Size of the Disruptor ring buffer. Should be a power of 2, for optimal performance.
-    - Making it smaller results in more backpressure for the producers and forces a slow down. 
-    - Making it bigger allows the producers to "run away" from the consumers and the consumers can consume the buffer in batches (which is one of the smart features of the Disruptor model).
-- `producer_threads` - By default scales to the total number of available CPU threads using the "$cpu.count" shorthand from Reinassaince.
-    - Also used to divide the total number of events equally between the producer threads for each partial event.
+ - `events_per_producer` - Number of events to produce per producer thread.
+     - This is the number of partial events per producer, because we are producing 3 partial events in the producers and then assembling them into the full TelemetryEvent instance in the AssemblerHandler.
+     - Bigger value results in longer runtime.
+ - `ring_size` - Size of the Disruptor ring buffer. Should be a power of 2, for optimal performance.
+     - Making it smaller results in more backpressure for the producers and forces a slow down. 
+     - Making it bigger allows the producers to "run away" from the consumers and the consumers can consume the buffer in batches (which is one of the smart features of the Disruptor model).
+ - `producer_threads` - By default scales to the total number of available CPU threads using the "$cpu.count" shorthand from Reinassaince.
+     - Also used to divide the total number of events equally between the producer threads for each partial event.
 
 #### Validation
 
