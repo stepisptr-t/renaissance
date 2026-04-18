@@ -1,9 +1,6 @@
 package org.renaissance;
 
-import java.util.Arrays;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.function.Function;
 import java.util.function.LongBinaryOperator;
 import java.util.function.ToLongFunction;
@@ -135,6 +132,22 @@ public interface BenchmarkResult {
         hashing(expected, sorted).validate();
       };
     }
+    
+    public static <T> BenchmarkResult collectionEquals(final String name, Collection<T> expected, Collection<T> actual) {
+      int size = 1 + expected.size(); // size equals + equals of each element in expected
+      BenchmarkResult[] results = new BenchmarkResult[size];
+
+      results[0] = simple("size of collection", expected.size(), actual.size());
+
+      List<T> expectedList = expected.stream().sorted().collect(toList());
+      List<T> actualList = actual.stream().sorted().collect(toList());
+      for(int i = 0 ; i < expected.size(); ++i) {
+        final int elementIndex = i;
+        results[i+1] = () -> Assert.assertEquals(expectedList.get(elementIndex), actualList.get(elementIndex), "Element at index " + elementIndex + "in sorted collections.");
+      }
+      return compound(results);
+    }
+    
 
     /**
      * Creates a {@link BenchmarkResult} composite which takes multiple

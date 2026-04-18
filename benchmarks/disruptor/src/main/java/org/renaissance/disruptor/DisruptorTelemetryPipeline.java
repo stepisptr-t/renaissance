@@ -127,7 +127,7 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
         return compound(
                 simple("aggregated events", expectedAggregatedEvents, totalProcessedEventCount.get()),
                 simple("sampled events", expectedAggregatedEvents / DataSampleHandler.SAMPLE_FRQCY, sampleStore.sampleCount()),
-                hashing("        5930fa5d", detectedFailingDataSources)
+                collectionEquals("detected anomaly data sources", expectedFailingDataSources, detectedFailingDataSources)
         );
     }
 }
