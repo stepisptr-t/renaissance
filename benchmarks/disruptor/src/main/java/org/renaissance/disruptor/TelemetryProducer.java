@@ -44,6 +44,9 @@ public final class TelemetryProducer implements Runnable {
 
                 random.setSeed(observationId);
 
+                int waitTimeNs = random.nextInt(500);
+                busyWait(waitTimeNs);
+
                 final long sequence = ringBuffer.next();
                 try {
                     final TelemetryEvent event = ringBuffer.get(sequence);
@@ -55,21 +58,18 @@ public final class TelemetryProducer implements Runnable {
                     boolean isFailing = random.nextInt(100) < FAILING_DATA_SOURCE_PROBABILITY;
                     double progress = (double) i / eventsPerProducer;
 
+
                     switch (type) {
                         case DATA_SOURCE_ID:
-                            long dataSourceId = isFailing
+                            event.dataSourceId = isFailing
                                     ? FAILING_DATA_SOURCE_IDS[(int)(observationId % FAILING_DATA_SOURCE_IDS.length)]
                                     : NORMAL_DATA_SOURCE_ID_BASE + (observationId % 1000);
-                            event.dataSourceId = dataSourceId;
-                            busyWait(100);
                             break;
                         case TORQUE:
                             produceSensorData(TORQUE_CONFIG, event, isFailing, progress, random);
-                            busyWait(200);
                             break;
                         case TEMPERATURE:
                             produceSensorData(TEMP_CONFIG, event, isFailing, progress, random);
-                            busyWait(500);
                             break;
                     }
                 } finally {
