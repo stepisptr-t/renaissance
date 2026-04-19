@@ -1,87 +1,94 @@
-# LMAX Disruptor data processing pipeline in Renaissance
+# LMAX Disruptor multiproducer data processing pipeline
 
 ### Data model and workload
 
 #### TelemetryEvent
-At the beginning of the pipeline, the Event is only a a partial event, containing only one of the data fields.
-Upon receiving all fields for an instance of ObservationID inside the `AssemblerHandler`, the final full TelemetryEvent is composed and used in the rest of the pipeline.
- - `observationId: long` - identifier of a logical moment in time of the given observation - is shared between partial events and used as an assembling key
- - `dataSourceID: long` - works as an abstraction over the identifier of the source device, the currently running job and the line number at which the controller was executing the job at the time of the observation.
- - `torques: double[6]` - represents the observed torque for each axis of the robot
- - `temperatures: double[6]` - represents the observed temperature for each axis of the robot
 
+At the beginning of the pipeline, the Event is only a partial event, containing only one of the data fields. Upon receiving all fields for an instance of ObservationID inside the `AssemblerHandler`, the final full TelemetryEvent is composed and used in the rest of the pipeline.
+
+- `observationId: long` - identifier of a logical moment in time of the given observation - is shared between partial
+  events and used as an assembling key
+- `dataSourceID: long` - works as an abstraction over the identifier of the source device, the currently running job and
+  the line number at which the controller was executing the job at the time of the observation.
+- `torques: double[6]` - represents the observed torque for each axis of the robot
+- `temperatures: double[6]` - represents the observed temperature for each axis of the robot
 
 ### Data pipeline
 
-The easiest explanation is the code of the nice Disruptor API
+The easiest explanation is the code of the nice LMAX Disruptor API:
+
 ```java
 // first the produced partial events are assembled into complete tuples of all data
 disruptor.handleEventsWith(new AssemblerHandler(ringSize))
         // then anomaly detection
-        .then(new AnomalyDetectorHandler(windowSize))
+        .then(new AnomalyDetectorHandler())
         .then(
             // then parallel anomalies processing
             new AnomalyPersistenceHandler(detectedFailingDataSources),
             // and data sampler of all events to simulate external out of pipeline storage/processing
-            new DataSampleHandler(sampleStore, totalProcessedEventCount)
-            );
+            new DataSampleHandler(sampleStore, totalProcessedEventCount));
 ```
+
 Each of these pipeline stages (or Handlers as Disruptor calls them) are running in its own separate thread created by the `DaemonThreadFactory` JDK thread factory, which is specified in the Disruptor constructor.
 
- - `TelemetryProducer` serves as a producer of data in a its own thread. Each producer produces `TelemetryEvent`s containing either one of `DataSourceID`, `torques` or `temperatures`. 
-     - The `producer_threads` parameter is used to split the producers equally for each of the types of partial events. It also influences the total number of producer threads. The `events_per_producer` parameter value controls the number of events per producer thread.
-        ```java
-        int producerTypesCount = PartialEventType.values().length;
-        int producersPerType = Math.max(1, producerCount / producerTypesCount);
-        int totalProducers = producersPerType * producerTypesCount;
-        long partialEventsPerProducer = eventsPerProducer;
-        ```
-     - Each data point is identified with a specific ObservationID. For simplification, it is guaranteed that each observation ID contains all DataSourceID, torques and temperatures.
- - `AssemblerHandler` holds a stateful map of incoming partial events and publishes the full event to the next handler only once all three pieces for the given observation id arrive.
-    - for the sake of simplification, we are ignoring the possible memory leaks in a production environment where either of the partial events is not actually recevied. Could be solved by using a LRU-like embedded linked list of oldest arrived events and have an O(1) stale events removal, but I did not want to complicate it too much. 
- - `AnomalyDetectionHandler` calculates a RMS for each DataSourceID observed and if the value, which was just observed crosses a certain percentage threshold from the baseline, it tags the event as anomaly.
- - `AnomalyPersistenceHandler` reads all events in the pipeline, which contain the flag that they are an anomaly and stores them.
-    - by design of the disruptor model, it has to read all the events in the pipeline, but only use the ones it's interested in (with the flag).
-    - This is partially used for validation that the expected job_ids get detected as anomalies.
- - `DataSampleHandler` is a sort of data sink, which just samples every 100 events  received and stores them into a buffer, which is preallocated before the benchmark starts so it doesnt influence the GC during the iterations. It is simulating the storage of data externally out of the pipeline, like to a database etc.
+- `TelemetryProducer` serves as a producer of data in its own thread. Each producer produces `TelemetryEvent`s containing either one of `DataSourceID`, `torques` or `temperatures`.
+    - The `producer_threads` parameter controls the number of concurrent producer threads. The `events_per_producer` parameter controls the number of events per producer thread.
+    - Each data point is identified with a specific ObservationID. For simplification, it is guaranteed that each ObservationID will eventually produce all DataSourceID, torques and temperatures. But the `AssemblerHandler` can handle situations where the the partial event is never finished in a certain amount of time without memory leaks.
+    - A randomized wait of several tens of nanoseconds is performed before claiming a sequence from the RingBuffer to simulate real-world producer workload and likely reduces contention by a bit.
+- `AssemblerHandler` holds a stateful map of incoming partial events and publishes the full event to the next handler
+  only once all three pieces for the given observation id arrive.
+- `AnomalyDetectorHandler` calculates a Rolling RMS for each DataSourceID observed. If the value crosses a 1.3x
+  threshold from the baseline, it tags the event as an anomaly.
+- `AnomalyPersistenceHandler` reads events tagged as anomalies and stores them for validation.
+- `DataSampleHandler` samples every 100 events received and stores them into a preallocated off-heap buffer to simulate
+  external storage without influencing GC.
 
 ### Design choices
 
 The Disruptor programming model was chosen due to its relative uniqueness in focus on lock-free pipeline processsing with a very impressive throughput for pipelines with multiple producers and consumers. The current concurrent workloads in the Renaissance suite focused on the Actor model (akka and reactor) or JDK task based concurrency. A workload which works in "mechanical sympathy" (as the authors of Disruptor like to say) was missing.
 
-For the specific strategies of the Disruptor model I chose `BusySpinWaitStrategy`, because this maximizes throughput at the cost of some busy spinning upon contention. It is generally appropriate to use for scenarious where, predictable latency is prefered. This specific pipeline is very CPU bound and has a continuous data-flow, therefore the threads dont busy spin for long.
+For the specific strategies of the Disruptor model I chose `BusySpinWaitStrategy`, because this maximizes throughput at the cost of some busy spinning upon contention. It is generally appropriate to use for scenarious where, predictable latency is prefered. This specific pipeline is very CPU bound and has a continuous data-flow, therefore the threads dont busy spin for very long (although IntelliJ Profiler tells me, that its one of the hotspots - which makes sense, given there is a lot of events being produced...).
 
-All random number generator use the same seed for every run, therefore each iteration should result in roughly equal workload.
+All random number generators use the same seed for every run, therefore each iteration should result in roughly equal workload. I used a simplified thread unsafe PRNG `FastUnsafeRandom`, because the thread safe variant `java.util.Random` was one of the bottlenecks in the producer threads.
+
+I also tuned the assembly of partial events inside `AssemblerHandler`, because the usage of a fast hashmap was still very expensive and in a production scenario did not really make sense, since it would create memory leaks of unfinished partial events. I used a preallocated buffer which is sized based on the expected throughput and desired lifetime of a partial event. It assumes that the keys are incremented linearly and therefore older values will be overwritten by new ones once the array wraps around.
+
+Overall the random and assembly tuning resulted in doubling of throughput (to ~9M events/s) at the expense of ~1GB of memory (outside of JVM heap).
 
 #### Licensing
 
-The LMAX Disruptor library and agrona (for low level containers and utilities), whose libraries I used in the workload are licensed under Apache 2.0 license and the workload is also licensed under the same license 
+The LMAX Disruptor and Aeron agrona (optimized containters and utilities), whose libraries I used in the workload are licensed under Apache 2.0 license and the workload is also licensed under the same license.
 
 #### Workload scaling
 
- - `events_per_producer` - Number of events to produce per producer thread.
-     - This is the number of partial events per producer, because we are producing 3 partial events in the producers and then assembling them into the full TelemetryEvent instance in the AssemblerHandler.
-     - Bigger value results in longer runtime.
- - `ring_size` - Size of the Disruptor ring buffer. Should be a power of 2, for optimal performance.
-     - Making it smaller results in more backpressure for the producers and forces a slow down. 
-     - Making it bigger allows the producers to "run away" from the consumers and the consumers can consume the buffer in batches (which is one of the smart features of the Disruptor model).
- - `producer_threads` - By default scales to the total number of available CPU threads using the "$cpu.count" shorthand from Reinassaince.
-     - Also used to divide the total number of events equally between the producer threads for each partial event.
+- `events_per_producer` - Number of partial events to produce per producer thread (default 5,000,000).
+- `producer_threads` - Number of concurrent producer threads (default 6).
+- `expected_throughput` - The expected throughput of the pipeline. This depends on the hardware on which it is run. Not easy to guess, but an optimistic guess of 10M events/sec for a less than 10 years old CPU seems to work fine.
+- `ring_size` - Size of the Disruptor ring buffer. Should be a power of 2, for optimal performance.
+    - Making it smaller results in more backpressure for the producers and forces a slowdown.
+### Validation
 
-#### Validation
+The validation is rather simple, it validates that all produced events go through the whole pipeline.
+It also validates that the anomalous data sources are marked as such and that the number of sampled full events at the end is exactly as expected and are properly stored.
 
-The validation is rather simple, it validates that all produced events go through the whole pipeline. It also validates that the anomalous data sources are marked as such and that the number of sampled full events at the end is exactly as expected.
+### Preliminary results from local run
 
-#### Preliminary results from local benchmark on OpenJDK
+I used the `jmx-timers` plugin which adds the JIT compilation times information to the results. I ran the benchmark with the JMX-timers plugin like this.
 
-I ran the benchmark on my Thinkpad T14 Gen 2 laptop with AMD Ryzen 5 PRO 5650U and 16GB RAM running NixOS 25.11 with kernel version 6.12.70 and openjdk 21.0.10. 
+```bash
+java -jar <renaissance-jar> \
+  --plugin <jmx-timers-jar> \
+  --csv results.csv \
+  --json results.json \
+  disruptor-telemetry
+```
 
-I used the `jmx-timers` plugin which adds the JIT compilation times information to the results.
+The result is stored in the [included](../../results.csv) [files](../../results.json).
 
-The result is stored in the [included file](results.json).
+![runtime](runtime.png)
 
-From the results, we can see that the JIT compiler works hardest in the first iteration (415ms of the 1376ms total runtime) and then is still significant for the 7 subsequent iterations. The total runtime then stabilises at around 1050ms.
+From the results, we can see that the JIT compiler works hardest in the first iteration (497ms of the 3501ms total runtime) and then is still relatively significant for the several subsequent iterations. The total runtime after the first iteration is very stable at around either 3000-3100ms. I presume that the minor deviations can be attributed to side effects of other running tasks in the system and the fact that the ring buffer sequence acquiring lock-free CAS loops are a point of high contention, a wrong order can mess up the sequences inside the frame buffer. I played with the delay between producers for a bit to force the misordering of events and it resulted in large differences in throughtput (half runs ~12,5M vs half ~9M events/s). This surprised me, because the selling point of LMAX Disruptor was the stable latency - but the multi producer scenario will probably always be a bit trickier in this regard, due to it's sequence guarantees and high contention on the producers side.
 
-We can see that the duration of the benchmark stays relatively stable after the first iteration, as the most JIT optimizations were achieved in the first iterations. This stability across iterations is thanks to the deterministic random number generation. The duration of some later iterations 16, 17, 19 dip to about 860ms, without any prior JIT activity. I presume that this can be attributed to external factors present in the system, but I have no evidence to back this up, as some similar dips occur in several different of the later iterations when I ran the benchmark again.
+![throughput](throughput.png)
 
-The modest speedup suggests that the workload performance is not dominated by JIT optimized code paths, but rather thanks to the architecture of the Disruptor model which is designed with mechanical sympathy in mind. The spinning overhead upon producer contention will stay there regardless of JIT optimization.
+The first run results in about ~8,5M events/second while the faster comes in at ~10M events/second. The JIT optimized code therefore results in about 15% speedup. I think that the speedup is rather modest due to the fact, that the LMAX Disruptor (and the workload itself) is designed with mechanical sympathy in mind, there is less low hanging fruit, which the JIT compiler can pick, which can explain the rather modest speedup.
