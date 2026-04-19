@@ -36,15 +36,17 @@ public final class TelemetryProducer implements Runnable {
     @Override
     public void run() {
         try {
-            final Random random = new FastUnsafeRandom();
+            final Random randomData = new FastUnsafeRandom(producerId);
+            final Random randomTime = new FastUnsafeRandom(producerId);
             final long baseObservationId = producerId * eventsPerProducer;
 
             for (long i = 0; i < eventsPerProducer; i++) {
                 final long observationId = baseObservationId + i;
 
-                random.setSeed(observationId);
+                randomData.setSeed(observationId);
 
-                int waitTimeNs = random.nextInt(500);
+                // somewhere between 300 and 500 ns busy waiting
+                int waitTimeNs = randomTime.nextInt(200) + 300;
                 busyWait(waitTimeNs);
 
                 final long sequence = ringBuffer.next();
@@ -55,7 +57,7 @@ public final class TelemetryProducer implements Runnable {
                     event.isReady = false;
                     event.isAnomaly = false;
 
-                    boolean isFailing = random.nextInt(100) < FAILING_DATA_SOURCE_PROBABILITY_PCT;
+                    boolean isFailing = randomData.nextInt(100) < FAILING_DATA_SOURCE_PROBABILITY_PCT;
                     double progress = (double) i / eventsPerProducer;
 
                     switch (type) {
@@ -65,10 +67,10 @@ public final class TelemetryProducer implements Runnable {
                                     : NORMAL_DATA_SOURCE_ID_BASE + (observationId % 1000);
                             break;
                         case TORQUE:
-                            produceSensorData(TORQUE_CONFIG, event, isFailing, progress, random);
+                            produceSensorData(TORQUE_CONFIG, event, isFailing, progress, randomData);
                             break;
                         case TEMPERATURE:
-                            produceSensorData(TEMP_CONFIG, event, isFailing, progress, random);
+                            produceSensorData(TEMP_CONFIG, event, isFailing, progress, randomData);
                             break;
                     }
                 } finally {
