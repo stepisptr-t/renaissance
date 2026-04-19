@@ -1,9 +1,21 @@
 package org.renaissance.disruptor;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+
+/**
+ * Uses a simple binary encoding of the PartialTelemetry objects into an offheap byte buffer, 
+ * which is used to store the elements.
+ * The size of the array is determined by the expected throughput and the desired lifetime.
+ * It expects that the ObservationIds are generated in a linear fashion, 
+ * which means that older observations have lower id and newer will overwrite the old ones 
+ * once the array index computed from the ID wraps around.
+ */
 final class PartialTelemetryMap {
 
-    private final PartialTelemetry[] partials;
+    private final ByteBuffer buffer;
     private final int mask;
+    private final PartialTelemetry flyweight = new PartialTelemetry();
 
     public PartialTelemetryMap(int expectedThroughput, int lifetimeSeconds) {
         long expectedObservationsPerSec = expectedThroughput / PartialEventType.values().length;
@@ -13,34 +25,45 @@ final class PartialTelemetryMap {
         while (size < requiredCapacity) {
             size <<= 1;
         }
-        this.partials = new PartialTelemetry[size];
+
+        this.buffer = ByteBuffer.allocateDirect(size * PartialTelemetry.SIZE_IN_BYTES).order(ByteOrder.nativeOrder());
         this.mask = size - 1;
-        for (int i = 0; i < size; i++) {
-            this.partials[i] = new PartialTelemetry();
-        }
+
+        clear();
     }
 
     public void clear() {
-        for (PartialTelemetry pt : partials) {
-            pt.reset();
-            pt.observationId = -1;
+        buffer.clear();
+        byte[] zeros = new byte[4096];
+        while (buffer.remaining() > 0) {
+            int length = Math.min(buffer.remaining(), zeros.length);
+            buffer.put(zeros, 0, length);
         }
+        buffer.clear();
     }
 
     /**
      * Once the observationId wraps around the size of the array, it overwrites old events,
      * whose lifetime had expired.
-     * This is a deliberate choice in the tradeoff between speed of access and lifetime management
-     * and memory usage (this wastes a lot of memory).
+     * This is a deliberate choice in the tradeoff of the speed of access and lifecycle management
+     * at the expense of memory usage.
      */
-    public PartialTelemetry getOrReset(long observationId) {
+    public PartialTelemetry readOrReset(long observationId) {
         int index = (int) (observationId & mask);
-        PartialTelemetry pt = partials[index];
+        int offset = index * PartialTelemetry.SIZE_IN_BYTES;
 
-        if (pt.observationId != observationId) {
-            pt.reset();
-            pt.observationId = observationId;
+        flyweight.readFrom(buffer, offset);
+
+        if (flyweight.observationId != observationId) {
+            flyweight.reset();
+            flyweight.observationId = observationId;
         }
-        return pt;
+        return flyweight;
+    }
+
+    public void writeBack(long observationId, PartialTelemetry pt) {
+        int index = (int) (observationId & mask);
+        int offset = index * PartialTelemetry.SIZE_IN_BYTES;
+        pt.writeTo(buffer, offset);
     }
 }

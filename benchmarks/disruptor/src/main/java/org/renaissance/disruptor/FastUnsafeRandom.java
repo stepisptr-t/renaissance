@@ -13,6 +13,11 @@ public class FastUnsafeRandom extends Random {
 
     private long currentSeed;
 
+    public FastUnsafeRandom(long seed) {
+        super();
+        this.currentSeed = seed;
+    }
+
     public FastUnsafeRandom() {
         super();
     }

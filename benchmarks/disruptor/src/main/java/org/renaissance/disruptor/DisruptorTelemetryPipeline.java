@@ -17,7 +17,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.LockSupport;
 
 import static org.renaissance.Benchmark.*;
 import static org.renaissance.BenchmarkResult.Validators.*;
@@ -28,13 +27,11 @@ import static org.renaissance.BenchmarkResult.Validators.*;
 @Licenses(License.APACHE2)
 @Repetitions(10)
 @Parameter(name = "producer_threads", defaultValue = "6", summary = "Number of concurrent producer threads (multiple of three is preferable).")
-@Parameter(name = "events_per_producer", defaultValue = "2000000", summary = "Number of events to produce per producer thread.")
+@Parameter(name = "events_per_producer", defaultValue = "5000000", summary = "Number of events to produce per producer thread.")
 @Parameter(name = "ring_size", defaultValue = "131072", summary = "Size of the LMAX Disruptor RingBuffer (must be power of 2).")
-@Parameter(name = "expected_throughput", defaultValue = "9000000", summary = "Expected throughput of events per second.")
-@Parameter(name = "expected_lifetime", defaultValue = "2", summary = "Expected lifetime of an incomplete observation in seconds.")
+@Parameter(name = "expected_throughput", defaultValue = "10000000", summary = "Expected throughput of events per second.")
 @Configuration(name = "test", settings = {"events_per_producer = 50000"})
 public final class DisruptorTelemetryPipeline implements Benchmark {
-
     // workload parameters
     private int eventsPerProducer;
     private int ringSize;
@@ -51,6 +48,7 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
 
     // preallocated map for storage of partial events
     private PartialTelemetryMap partialsMap;
+    private static final int PARTIAL_EVENT_LIFETIME_SECONDS = 2;
 
     public DisruptorTelemetryPipeline() {
         expectedFailingDataSources = new LongHashSet();
@@ -67,11 +65,13 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
         ringSize = context.parameter("ring_size").toPositiveInteger();
         producerCount = Math.max(1, context.parameter("producer_threads").toPositiveInteger());
         int expectedThroughput = context.parameter("expected_throughput").toPositiveInteger();
-        int expectedLifetime = context.parameter("expected_lifetime").toPositiveInteger();
 
-        int maxSamples = (((eventsPerProducer * producerCount) / PartialEventType.values().length) / DataSampleHandler.SAMPLE_FRQCY) + 1;
+        int producerTypesCount = PartialEventType.values().length;
+        int producersPerType = Math.max(1, producerCount / producerTypesCount);
+
+        int maxSamples = (int) ((((long) eventsPerProducer * producersPerType) / DataSampleHandler.SAMPLE_FRQCY) + 1);
         sampleStore = new TelemetrySampleStorage(maxSamples);
-        partialsMap = new PartialTelemetryMap(expectedThroughput, expectedLifetime);
+        partialsMap = new PartialTelemetryMap(expectedThroughput, PARTIAL_EVENT_LIFETIME_SECONDS);
     }
 
     @Override
