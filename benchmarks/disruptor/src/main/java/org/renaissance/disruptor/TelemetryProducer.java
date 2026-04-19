@@ -8,7 +8,7 @@ import java.util.concurrent.CountDownLatch;
 public final class TelemetryProducer implements Runnable {
     public static final long[] FAILING_DATA_SOURCE_IDS = {10, 20, 30, 40, 50};
     private static final long NORMAL_DATA_SOURCE_ID_BASE = 1000L;
-    private static final int FAILING_DATA_SOURCE_PROBABILITY = 1;
+    private static final int FAILING_DATA_SOURCE_PROBABILITY_PCT = 1;
 
     private static final SensorConfig TORQUE_CONFIG = new SensorConfig(50.0, 450.0, 100.0, 10.0);
     private static final SensorConfig TEMP_CONFIG = new SensorConfig(20.0, 60.0, 40.0, 5.0);
@@ -36,9 +36,9 @@ public final class TelemetryProducer implements Runnable {
     @Override
     public void run() {
         try {
-            final Random random = new Random();
+            final Random random = new FastUnsafeRandom();
             final long baseObservationId = producerId * eventsPerProducer;
-            
+
             for (long i = 0; i < eventsPerProducer; i++) {
                 final long observationId = baseObservationId + i;
 
@@ -55,9 +55,8 @@ public final class TelemetryProducer implements Runnable {
                     event.isReady = false;
                     event.isAnomaly = false;
 
-                    boolean isFailing = random.nextInt(100) < FAILING_DATA_SOURCE_PROBABILITY;
+                    boolean isFailing = random.nextInt(100) < FAILING_DATA_SOURCE_PROBABILITY_PCT;
                     double progress = (double) i / eventsPerProducer;
-
 
                     switch (type) {
                         case DATA_SOURCE_ID:
@@ -100,7 +99,8 @@ public final class TelemetryProducer implements Runnable {
         double base = isFailing ? config.failingBase : config.normalBase;
         double drift = isFailing ? (progress * config.maxDrift) : 0.0;
         for (int k = 0; k < 6; k++) {
-            double value = base + drift + random.nextDouble() * config.noise;
+            double noiseScale = (random.nextDouble() * 2.0) - 1.0;
+            double value = base + drift + (noiseScale * config.noise);
             if (this.type == PartialEventType.TORQUE) {
                 event.torques[k] = value;
             } else {
@@ -112,7 +112,7 @@ public final class TelemetryProducer implements Runnable {
     private void busyWait(long nanoseconds) {
         long end = System.nanoTime() + nanoseconds;
         while (System.nanoTime() < end) {
-            // busy spin
+            Thread.onSpinWait();
         }
     }
 

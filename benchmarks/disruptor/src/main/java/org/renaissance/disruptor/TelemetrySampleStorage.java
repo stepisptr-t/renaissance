@@ -2,6 +2,8 @@ package org.renaissance.disruptor;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 public final class TelemetrySampleStorage {
 
@@ -12,12 +14,20 @@ public final class TelemetrySampleStorage {
         this.buffer = ByteBuffer.allocateDirect(maxSamples * TelemetryEvent.DATA_BYTE_SIZE).order(ByteOrder.nativeOrder());
     }
 
-    public boolean store(TelemetryEvent event) {
+    public void store(TelemetryEvent event) {
         if (currentOffset + TelemetryEvent.DATA_BYTE_SIZE > buffer.capacity()) {
-            return false;
+            throw new ArrayIndexOutOfBoundsException(currentOffset);
         }
         currentOffset += event.writeDataTo(buffer, currentOffset);
-        return true;
+    }
+
+    public Stream<TelemetryEvent> stream() {
+        return IntStream.range(0, sampleCount())
+                .mapToObj(i -> {
+                    TelemetryEvent event = new TelemetryEvent();
+                    event.readDataFrom(buffer, i * TelemetryEvent.DATA_BYTE_SIZE);
+                    return event;
+                });
     }
 
     public void reset() {

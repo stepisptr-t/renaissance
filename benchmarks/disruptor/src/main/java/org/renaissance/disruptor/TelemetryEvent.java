@@ -17,7 +17,6 @@ public final class TelemetryEvent {
 
     public int writeDataTo(ByteBuffer dst, int offset) {
         int pos = dst.position();
-        dst.order(ByteOrder.nativeOrder());
         dst.putLong(offset, observationId);
         dst.putLong(offset + 8, dataSourceId);
         for (int i = 0; i < 6; i++) {
@@ -27,6 +26,18 @@ public final class TelemetryEvent {
             dst.putDouble(offset + 64 + i * 8, temperatures[i]);
         }
         dst.position(pos);
+        return DATA_BYTE_SIZE;
+    }
+
+    public int readDataFrom(ByteBuffer src, int offset) {
+        observationId = src.getLong(offset);
+        dataSourceId = src.getLong(offset + 8);
+        for (int i = 0; i < 6; i++) {
+            torques[i] = src.getDouble(offset + 16 + i * 8);
+        }
+        for (int i = 0; i < 6; i++) {
+            temperatures[i] = src.getDouble(offset + 64 + i * 8);
+        }
         return DATA_BYTE_SIZE;
     }
 }
