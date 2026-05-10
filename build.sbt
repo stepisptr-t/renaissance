@@ -290,7 +290,7 @@ lazy val disruptorBenchmarks = (project in file("benchmarks/disruptor"))
     libraryDependencies ++= Seq(
       "com.lmax" % "disruptor" % "4.0.0",
       "org.agrona" % "agrona" % "2.4.0",
-      "com.google.guava" % "guava" % guavaVersion
+      "com.github.ben-manes.caffeine" % "caffeine" % "3.2.4"
     )
   )
   .dependsOn(renaissanceCore % "provided")

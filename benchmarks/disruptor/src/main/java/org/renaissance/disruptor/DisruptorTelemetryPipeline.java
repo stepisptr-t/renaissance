@@ -25,17 +25,17 @@ import static org.renaissance.BenchmarkResult.Validators.*;
 @Group("concurrency")
 @Summary("High-throughput telemetry trend analysis pipeline.")
 @Licenses(License.APACHE2)
-@Repetitions(10)
-@Parameter(name = "producer_threads", defaultValue = "6", summary = "Number of concurrent producer threads (multiple of three is preferable).")
-@Parameter(name = "events_per_producer", defaultValue = "5000000", summary = "Number of events to produce per producer thread.")
-@Parameter(name = "ring_size", defaultValue = "131072", summary = "Size of the LMAX Disruptor RingBuffer (must be power of 2).")
-@Parameter(name = "expected_throughput", defaultValue = "10000000", summary = "Expected throughput of events per second.")
+@Repetitions(30)
+@Parameter(name = "events_per_producer", defaultValue = "1000000", summary = "Number of events to produce per producer thread. (At least 100k)")
+@Parameter(name = "ring_size", defaultValue = "131072", summary = "Size of the LMAX Disruptor RingBuffer (should be power of 2).")
+@Parameter(name = "storage_strategy", defaultValue = "sbebuffer", summary = "Storage strategy for partial events (sbebuffer, caffeine, hashmap).")
 @Configuration(name = "test", settings = {"events_per_producer = 50000"})
 public final class DisruptorTelemetryPipeline implements Benchmark {
     // workload parameters
     private int eventsPerProducer;
     private int ringSize;
     private int producerCount;
+    private String storageStrategy;
 
     // validation containers and counters
     private final Set<Long> expectedFailingDataSources;
@@ -46,15 +46,13 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
     // used as a data sink at the end and simulates external storage
     private TelemetrySampleStorage sampleStore;
 
-    // preallocated map for storage of partial events
-    private PartialTelemetryMap partialsMap;
-    private static final int PARTIAL_EVENT_LIFETIME_SECONDS = 2;
+    // storage of partial events with limited lifetime
+    private PartialTelemetryStorage partialTelemetryStorage;
+    public static final int PARTIAL_EVENT_LIFETIME_MILLIS = 2500;
 
     public DisruptorTelemetryPipeline() {
         expectedFailingDataSources = new LongHashSet();
-        for (long id : TelemetryProducer.FAILING_DATA_SOURCE_IDS) {
-            expectedFailingDataSources.add(id);
-        }
+        expectedFailingDataSources.addAll(TelemetryProducer.FAILING_DATA_SOURCE_IDS);
         detectedFailingDataSources = Collections.synchronizedSet(new HashSet<>());
         totalProcessedEventCount = new AtomicLong(0);
     }
@@ -63,21 +61,58 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
     public void setUpBeforeAll(BenchmarkContext context) {
         eventsPerProducer = context.parameter("events_per_producer").toPositiveInteger();
         ringSize = context.parameter("ring_size").toPositiveInteger();
-        producerCount = Math.max(1, context.parameter("producer_threads").toPositiveInteger());
-        int expectedThroughput = context.parameter("expected_throughput").toPositiveInteger();
+        storageStrategy = context.parameter("storage_strategy").value().toLowerCase();
+
+        if (eventsPerProducer < 100_000) {
+            throw new IllegalArgumentException("events_per_producer should be at least 100k");
+        }
+
+        producerCount = Math.max(3, Math.min(16, Runtime.getRuntime().availableProcessors()));
 
         int producerTypesCount = PartialEventType.values().length;
         int producersPerType = Math.max(1, producerCount / producerTypesCount);
 
         int maxSamples = (int) ((((long) eventsPerProducer * producersPerType) / DataSampleHandler.SAMPLE_FRQCY) + 1);
         sampleStore = new TelemetrySampleStorage(maxSamples);
-        partialsMap = new PartialTelemetryMap(expectedThroughput, PARTIAL_EVENT_LIFETIME_SECONDS);
-    }
 
-    @Override
-    public void tearDownAfterAll(BenchmarkContext context) {
-        sampleStore = null;
-        partialsMap = null;
+        switch (storageStrategy) {
+            case "sbebuffer":
+                partialTelemetryStorage = new PartialTelemetrySBEBufferStorage(9_000_000, PARTIAL_EVENT_LIFETIME_MILLIS);
+                break;
+            case "caffeine":
+                partialTelemetryStorage = new PartialTelemetryCacheStorage(PARTIAL_EVENT_LIFETIME_MILLIS);
+                break;
+            case "hashmap":
+                partialTelemetryStorage = new PartialTelemetryHashmapStorage();
+                break;
+            default:
+                throw new IllegalArgumentException("Unknown storage strategy: " + storageStrategy);
+        }
+
+        // For the sbe buffer, we need a warm-up and estimate the throughput for correct lifetime management
+        if (storageStrategy.equals("sbebuffer")) {
+            int warmupEventsPerProducer = 200_000;
+            // warmup for pagefaults and jit
+            for (int i=0 ; i< 10 ; ++i) {
+                executePipeline(warmupEventsPerProducer, partialTelemetryStorage);
+                tearDownAfterEach(context);
+            }
+
+            long startTime = System.nanoTime();
+            executePipeline(warmupEventsPerProducer, partialTelemetryStorage);
+            long endTime = System.nanoTime();
+
+            double durationSeconds = (endTime - startTime) / 1_000_000_000.0;
+            long totalEvents = (long) warmupEventsPerProducer * producerTypesCount * producersPerType;
+
+            // overshooting by about 25% just to be safe with lifetime management and to avoid premature overwriting of partial events
+            // the throughput and latency should be rather stable, but sometimes spikes do happen for reasons outside the jvm and we dont want them to cause failures
+            int estimatedThroughput = (int) (1.25 * (totalEvents / durationSeconds));
+
+            partialTelemetryStorage = new PartialTelemetrySBEBufferStorage(estimatedThroughput, PARTIAL_EVENT_LIFETIME_MILLIS);
+        }
+
+        tearDownAfterEach(context);
     }
 
     @Override
@@ -85,11 +120,10 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
         detectedFailingDataSources.clear();
         totalProcessedEventCount.set(0);
         sampleStore.reset();
-        partialsMap.clear();
+        partialTelemetryStorage.clear();
     }
 
-    @Override
-    public BenchmarkResult run(BenchmarkContext context) {
+    private void executePipeline(int eventsToProduce, PartialTelemetryStorage storage) {
         final Disruptor<TelemetryEvent> disruptor = new Disruptor<>(
                 TelemetryEvent::new,
                 ringSize,
@@ -98,11 +132,11 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
                 new BusySpinWaitStrategy()
         );
 
-        disruptor.handleEventsWith(new AssemblerHandler(partialsMap))
+        disruptor.handleEventsWith(new AssemblerHandler(storage))
                 .then(new AnomalyDetectorHandler())
                 .then(
-                    new AnomalyPersistenceHandler(detectedFailingDataSources),
-                    new DataSampleHandler(sampleStore, totalProcessedEventCount)
+                        new AnomalyPersistenceHandler(detectedFailingDataSources),
+                        new DataSampleHandler(sampleStore, totalProcessedEventCount)
                 );
 
         RingBuffer<TelemetryEvent> ringBuffer = disruptor.start();
@@ -110,9 +144,7 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
         int producerTypesCount = PartialEventType.values().length;
         int producersPerType = Math.max(1, producerCount / producerTypesCount);
         int totalProducers = producersPerType * producerTypesCount;
-        long partialEventsPerProducer = eventsPerProducer;
-
-        long expectedAggregatedEvents = (long) eventsPerProducer * producersPerType;
+        long partialEventsPerProducer = eventsToProduce;
 
         final CountDownLatch latch = new CountDownLatch(totalProducers);
 
@@ -132,16 +164,26 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
         } finally {
             producerExecutor.shutdownNow();
         }
+    }
+
+    @Override
+    public BenchmarkResult run(BenchmarkContext context) {
+        executePipeline(eventsPerProducer, partialTelemetryStorage);
+
+        int producerTypesCount = PartialEventType.values().length;
+        int producersPerType = Math.max(1, producerCount / producerTypesCount);
+
+        long expectedAggregatedEvents = (long) eventsPerProducer * producersPerType;
 
         return compound(
                 simple("aggregated events", expectedAggregatedEvents, totalProcessedEventCount.get()),
                 simple("sampled events", expectedAggregatedEvents / DataSampleHandler.SAMPLE_FRQCY, sampleStore.sampleCount()),
                 simple("samples are not empty",
                         sampleStore.sampleCount(),
-                        sampleStore.stream().filter( event ->
+                        sampleStore.stream().filter(event ->
                                 event.dataSourceId > 0
-                                && Arrays.stream(event.temperatures).allMatch(temp -> temp > 0d)
-                                && Arrays.stream(event.torques).allMatch(torq -> torq > 0d)
+                                        && Arrays.stream(event.temperatures).allMatch(temp -> temp > 0d)
+                                        && Arrays.stream(event.torques).allMatch(torq -> torq > 0d)
                         ).count()
                 ),
                 collectionEquals("detected anomaly data sources", expectedFailingDataSources, detectedFailingDataSources)

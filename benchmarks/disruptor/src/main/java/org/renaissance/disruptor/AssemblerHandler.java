@@ -3,16 +3,16 @@ package org.renaissance.disruptor;
 import com.lmax.disruptor.EventHandler;
 
 final class AssemblerHandler implements EventHandler<TelemetryEvent> {
-    private final PartialTelemetryMap partials;
+    private final PartialTelemetryStorage partialStorage;
 
-    public AssemblerHandler(PartialTelemetryMap partialsMap) {
-        this.partials = partialsMap;
+    public AssemblerHandler(PartialTelemetryStorage partialStorage) {
+        this.partialStorage = partialStorage;
     }
 
     @Override
     public void onEvent(TelemetryEvent event, long sequence, boolean endOfBatch) {
         long key = event.observationId;
-        PartialTelemetry pt = partials.readOrReset(key);
+        PartialTelemetry pt = partialStorage.readOrReset(key);
 
         switch (event.type) {
             case DATA_SOURCE_ID:
@@ -37,6 +37,6 @@ final class AssemblerHandler implements EventHandler<TelemetryEvent> {
             return;
         }
         event.isReady = false;
-        partials.writeBack(key, pt);
+        partialStorage.writeBack(key, pt);
     }
 }

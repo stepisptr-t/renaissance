@@ -11,15 +11,15 @@ import java.nio.ByteOrder;
  * which means that older observations have lower id and newer will overwrite the old ones 
  * once the array index computed from the ID wraps around.
  */
-final class PartialTelemetryMap {
+final class PartialTelemetrySBEBufferStorage implements PartialTelemetryStorage {
 
     private final ByteBuffer buffer;
     private final int mask;
     private final PartialTelemetry flyweight = new PartialTelemetry();
 
-    public PartialTelemetryMap(int expectedThroughput, int lifetimeSeconds) {
+    public PartialTelemetrySBEBufferStorage(int expectedThroughput, int lifetimeMillis) {
         long expectedObservationsPerSec = expectedThroughput / PartialEventType.values().length;
-        long requiredCapacity = expectedObservationsPerSec * lifetimeSeconds;
+        long requiredCapacity = expectedObservationsPerSec * (lifetimeMillis/1000);
 
         int size = 1;
         while (size < requiredCapacity) {
@@ -57,6 +57,7 @@ final class PartialTelemetryMap {
         if (flyweight.observationId != observationId) {
             flyweight.reset();
             flyweight.observationId = observationId;
+            writeBack(observationId, flyweight);
         }
         return flyweight;
     }

@@ -2,8 +2,8 @@ package org.renaissance.disruptor;
 
 import java.nio.ByteBuffer;
 
-final class PartialTelemetry {
-    public static final int SIZE_IN_BYTES = 120; // 8+8+4+48+48 = 116 bytes -> 120 aligned to 8 bytes
+public final class PartialTelemetry {
+    public static final int SIZE_IN_BYTES = 128; // 8+8+4+48+48 = 116 bytes -> 128 aligned to cache line size
 
     long observationId = -1;
     long dataSourceId;

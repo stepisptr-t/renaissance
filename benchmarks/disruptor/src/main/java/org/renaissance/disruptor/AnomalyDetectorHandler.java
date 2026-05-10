@@ -6,7 +6,7 @@ import org.agrona.collections.Long2ObjectHashMap;
 final class AnomalyDetectorHandler implements EventHandler<TelemetryEvent> {
     private static final double ANOMALY_THRESHOLD = 1.3;
     private static final double THRESHOLD_SQ = ANOMALY_THRESHOLD * ANOMALY_THRESHOLD;
-    private static final int WINDOW_SIZE = 100;
+    private static final int WINDOW_SIZE = 250;
 
     private final Long2ObjectHashMap<DataSourceState> dataSourceStates = new Long2ObjectHashMap<>();
 
@@ -44,7 +44,7 @@ final class AnomalyDetectorHandler implements EventHandler<TelemetryEvent> {
 
     /**
      * Optimized RMS which calculates a rolling sum of squares.
-     * 
+     * <p>
      * We skip the square root and division by windowSize when comparing against the baseline because:
      * sqrt(sumSq_current / N) > sqrt(sumSq_baseline / N) * THRESHOLD
      * is mathematically equivalent to:
@@ -67,12 +67,12 @@ final class AnomalyDetectorHandler implements EventHandler<TelemetryEvent> {
             double oldValue = window[cursor];
             sumSq = sumSq - (oldValue * oldValue) + (newValue * newValue);
             window[cursor] = newValue;
-            
+
             cursor++;
             if (cursor == windowSize) {
                 cursor = 0;
             }
-            
+
             if (baselineSumSqThreshold < 0) {
                 samplesSeen++;
                 if (samplesSeen >= windowSize) {

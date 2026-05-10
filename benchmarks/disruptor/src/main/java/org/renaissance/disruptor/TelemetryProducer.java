@@ -2,11 +2,12 @@ package org.renaissance.disruptor;
 
 import com.lmax.disruptor.RingBuffer;
 
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 
 public final class TelemetryProducer implements Runnable {
-    public static final long[] FAILING_DATA_SOURCE_IDS = {10, 20, 30, 40, 50};
+    public static final List<Long> FAILING_DATA_SOURCE_IDS = List.of(10L, 20L, 30L, 40L, 50L);
     private static final long NORMAL_DATA_SOURCE_ID_BASE = 1000L;
     private static final int FAILING_DATA_SOURCE_PROBABILITY_PCT = 1;
 
@@ -63,7 +64,7 @@ public final class TelemetryProducer implements Runnable {
                     switch (type) {
                         case DATA_SOURCE_ID:
                             event.dataSourceId = isFailing
-                                    ? FAILING_DATA_SOURCE_IDS[(int)(observationId % FAILING_DATA_SOURCE_IDS.length)]
+                                    ? FAILING_DATA_SOURCE_IDS.get((int)(observationId % FAILING_DATA_SOURCE_IDS.size()))
                                     : NORMAL_DATA_SOURCE_ID_BASE + (observationId % 1000);
                             break;
                         case TORQUE:
