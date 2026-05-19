@@ -1,6 +1,7 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.util;
 
 import com.lmax.disruptor.RingBuffer;
+import org.renaissance.disruptor.storage.PartialEventType;
 
 import java.util.List;
 import java.util.Random;

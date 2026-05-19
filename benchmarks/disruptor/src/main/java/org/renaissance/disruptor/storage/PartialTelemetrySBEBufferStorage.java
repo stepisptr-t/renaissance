@@ -1,4 +1,4 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.storage;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -11,7 +11,7 @@ import java.nio.ByteOrder;
  * which means that older observations have lower id and newer will overwrite the old ones 
  * once the array index computed from the ID wraps around.
  */
-final class PartialTelemetrySBEBufferStorage implements PartialTelemetryStorage {
+public final class PartialTelemetrySBEBufferStorage implements PartialTelemetryStorage {
 
     private final ByteBuffer buffer;
     private final int mask;
@@ -54,9 +54,9 @@ final class PartialTelemetrySBEBufferStorage implements PartialTelemetryStorage 
 
         flyweight.readFrom(buffer, offset);
 
-        if (flyweight.observationId != observationId) {
+        if (flyweight.getObservationId() != observationId) {
             flyweight.reset();
-            flyweight.observationId = observationId;
+            flyweight.setObservationId(observationId);
             writeBack(observationId, flyweight);
         }
         return flyweight;

@@ -1,11 +1,11 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.storage;
 
 import java.time.Duration;
 
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Cache;
 
-final class PartialTelemetryCacheStorage implements PartialTelemetryStorage {
+public final class PartialTelemetryCacheStorage implements PartialTelemetryStorage {
 
     private final Cache<Long, PartialTelemetry> cache;
 

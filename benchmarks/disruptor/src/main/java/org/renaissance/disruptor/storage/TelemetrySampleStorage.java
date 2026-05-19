@@ -1,4 +1,6 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.storage;
+
+import org.renaissance.disruptor.util.TelemetryEvent;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;

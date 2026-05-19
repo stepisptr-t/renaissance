@@ -1,9 +1,10 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.handlers;
 
 import com.lmax.disruptor.EventHandler;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.renaissance.disruptor.util.TelemetryEvent;
 
-final class AnomalyDetectorHandler implements EventHandler<TelemetryEvent> {
+public final class AnomalyDetectorHandler implements EventHandler<TelemetryEvent> {
     private static final double ANOMALY_THRESHOLD = 1.3;
     private static final double THRESHOLD_SQ = ANOMALY_THRESHOLD * ANOMALY_THRESHOLD;
     private static final int WINDOW_SIZE = 250;

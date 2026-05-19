@@ -1,7 +1,8 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.util;
+
+import org.renaissance.disruptor.storage.PartialEventType;
 
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 
 public final class TelemetryEvent {
 

@@ -1,4 +1,4 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.util;
 
 import java.util.Random;
 

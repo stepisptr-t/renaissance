@@ -1,4 +1,4 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.storage;
 
 public interface PartialTelemetryStorage {
     void clear();

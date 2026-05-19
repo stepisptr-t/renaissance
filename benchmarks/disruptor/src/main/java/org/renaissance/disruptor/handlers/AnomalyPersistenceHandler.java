@@ -1,9 +1,11 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.handlers;
 
 import com.lmax.disruptor.EventHandler;
+import org.renaissance.disruptor.util.TelemetryEvent;
+
 import java.util.Set;
 
-final class AnomalyPersistenceHandler implements EventHandler<TelemetryEvent> {
+public final class AnomalyPersistenceHandler implements EventHandler<TelemetryEvent> {
     private final Set<Long> detectedFailingDataSources;
 
     public AnomalyPersistenceHandler(Set<Long> detectedFailingDataSources) {

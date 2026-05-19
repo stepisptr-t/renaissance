@@ -1,4 +1,4 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.storage;
 
 import org.agrona.collections.Long2ObjectHashMap;
 

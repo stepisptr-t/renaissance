@@ -1,9 +1,12 @@
-package org.renaissance.disruptor;
+package org.renaissance.disruptor.handlers;
 
 import com.lmax.disruptor.EventHandler;
+import org.renaissance.disruptor.util.TelemetryEvent;
+import org.renaissance.disruptor.storage.TelemetrySampleStorage;
+
 import java.util.concurrent.atomic.AtomicLong;
 
-final class DataSampleHandler implements EventHandler<TelemetryEvent> {
+public final class DataSampleHandler implements EventHandler<TelemetryEvent> {
     public static final int SAMPLE_FRQCY = 100;
 
     private final TelemetrySampleStorage store;
