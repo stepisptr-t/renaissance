@@ -23,18 +23,18 @@ disruptor.handleEventsWith(new AssemblerHandler(ringSize))
         // then anomaly detection
         .then(new AnomalyDetectorHandler())
         .then(
-            // then parallel anomalies processing
+        // then parallel anomalies processing
             new AnomalyPersistenceHandler(detectedFailingDataSources),
-            // and data sampler of all events to simulate external out of pipeline storage/processing
+// and data sampler of all events to simulate external out of pipeline storage/processing
             new DataSampleHandler(sampleStore, totalProcessedEventCount));
 ```
 
 Each of these pipeline stages (or Handlers as Disruptor calls them) are running in its own separate thread created by the `DaemonThreadFactory` JDK thread factory, which is specified in the Disruptor constructor.
 
 - `TelemetryProducer` serves as a producer of data in its own thread. Each producer produces `TelemetryEvent`s containing either one of `DataSourceID`, `torques` or `temperatures`.
-    - The `producer_threads` parameter controls the number of concurrent producer threads. The `events_per_producer` parameter controls the number of events per producer thread.
-    - Each data point is identified with a specific ObservationID. For simplification, it is guaranteed that each ObservationID will eventually produce all DataSourceID, torques and temperatures. But the `AssemblerHandler` can handle situations where the the partial event is never finished in a certain amount of time without memory leaks.
-    - A randomized wait of several tens of nanoseconds is performed before claiming a sequence from the RingBuffer to simulate real-world producer workload and likely reduces contention by a bit.
+  - The `producer_threads` parameter controls the number of concurrent producer threads. The `events_per_producer` parameter controls the number of events per producer thread.
+  - Each data point is identified with a specific ObservationID. For simplification, it is guaranteed that each ObservationID will eventually produce all DataSourceID, torques and temperatures. But the `AssemblerHandler` can handle situations where the the partial event is never finished in a certain amount of time without memory leaks.
+  - A randomized wait of several tens of nanoseconds is performed before claiming a sequence from the RingBuffer to simulate real-world producer workload and likely reduces contention by a bit.
 - `AssemblerHandler` holds a stateful map of incoming partial events and publishes the full event to the next handler
   only once all three pieces for the given observation id arrive.
 - `AnomalyDetectorHandler` calculates a Rolling RMS for each DataSourceID observed. If the value crosses a 1.3x
@@ -51,9 +51,13 @@ For the specific strategies of the Disruptor model I chose `BusySpinWaitStrategy
 
 All random number generators use the same seed for every run, therefore each iteration should result in roughly equal workload. I used a simplified thread unsafe PRNG `FastUnsafeRandom`, because the thread safe variant `java.util.Random` was one of the bottlenecks in the producer threads.
 
-I also tuned the assembly of partial events inside `AssemblerHandler`, because the usage of a fast hashmap was still very expensive and in a production scenario did not really make sense, since it would create memory leaks of unfinished partial events. I used a preallocated buffer which is sized based on the expected throughput and desired lifetime of a partial event. It assumes that the keys are incremented linearly and therefore older values will be overwritten by new ones once the array wraps around.
+I also tuned the storage and assembly of partial events inside `AssemblerHandler`, because the usage of a fast hashmap was still very expensive and in a production scenario did not really make sense, since it would create memory leaks of unfinished partial events. In the end I implemented three strategies for the storage of these events.
 
-Overall the random and assembly tuning resulted in doubling of throughput (to ~9M events/s) at the expense of ~1GB of memory (outside of JVM heap).
+- sbebuffer (`PartialTelemetrySBEBufferStorage`) - the fastest solution, simple binary encoded byte ring buffer stored outside of jvm heap. Its size is determined based on the expected throughput and desired lifetime of a partial event. It assumes that the keys are incremented linearly and therefore older values will be overwritten by new ones once the ring buffer wraps around. (~7M events/second)
+- caffeine (`PartialTelemetryCacheStorage`) - a caffeine write expiring cache which is the simplest solution without memory leaks. it resulted in a significant drop in performance though. (1,8M events/second)
+- hashmap (`PartialTelemetryHashmapStorage`) - an argona implementation of a long to object hashmap. very fast, but results in memleaks if partial events get lost. (~2,7M events/second)
+
+Overall the random and assembly tuning resulted in doubling of throughput (to ~7M events/s) at the expense of preallocated ~1GB of memory. The other strategies also produce a lot of short lived objects and result in a close to ~1GB of memory usage peak. The off heap SBE storage makes sure that the GC does not have to bother and the memory can be easily reused as necessary.
 
 #### Licensing
 
@@ -61,11 +65,15 @@ The LMAX Disruptor and Aeron agrona (optimized containters and utilities), whose
 
 #### Workload scaling
 
+##### Parameters
 - `events_per_producer` - Number of partial events to produce per producer thread (default 5,000,000).
-- `producer_threads` - Number of concurrent producer threads (default 6).
-- `expected_throughput` - The expected throughput of the pipeline. This depends on the hardware on which it is run. Not easy to guess, but an optimistic guess of 10M events/sec for a less than 10 years old CPU seems to work fine.
 - `ring_size` - Size of the Disruptor ring buffer. Should be a power of 2, for optimal performance.
-    - Making it smaller results in more backpressure for the producers and forces a slowdown.
+  - Making it smaller results in more backpressure for the producers and forces a slowdown.
+
+#### Autoscaling based on HW
+- Number of concurrent producer threads are determined by the number of available CPUs as follows `producerCount = Math.max(3, Math.min(16, Runtime.getRuntime().availableProcessors()));`
+- For the `sbebuffer` partial storage strategy, the workload first measures the expected throughput and then autoscales the size of the internal offheap ringbuffer.
+
 ### Validation
 
 The validation is rather simple, it validates that all produced events go through the whole pipeline.
@@ -83,12 +91,9 @@ java -jar <renaissance-jar> \
   disruptor-telemetry
 ```
 
-The result is stored in the [included](../../results.csv) [files](../../results.json).
+The result are stored in the [included](results-sbebuffer.csv) [files](results-sbebuffer.json).
 
 ![runtime](runtime.png)
 
-From the results, we can see that the JIT compiler works hardest in the first iteration (497ms of the 3501ms total runtime) and then is still relatively significant for the several subsequent iterations. The total runtime after the first iteration is very stable at around either 3000-3100ms. I presume that the minor deviations can be attributed to side effects of other running tasks in the system and the fact that the ring buffer sequence acquiring lock-free CAS loops are a point of high contention, a wrong order can mess up the sequences inside the frame buffer. I played with the delay between producers for a bit to force the misordering of events and it resulted in large differences in throughtput (half runs ~12,5M vs half ~9M events/s). This surprised me, because the selling point of LMAX Disruptor was the stable latency - but the multi producer scenario will probably always be a bit trickier in this regard, due to it's sequence guarantees and high contention on the producers side.
-
+From the results, we can see that the JIT compiler works hardest even before the first iteration happens, because the `sbebuffer` for the storage strategy we need to estimate the throughput, which already compiles most of the hot paths. The compiler is later still relatively significant for the several subsequent iterations. The total runtime after the first iteration is very stable at around ~1800ms. I presume that the minor deviations can be attributed to side effects of other running tasks in the system and the fact that the ring buffer sequence acquiring lock-free CAS loops are a point of high contention, a wrong order can mess up the sequences inside the frame buffer. I played with the delay between producers for a bit to force the misordering of events and it resulted in large differences in throughtput. This surprised me, because the selling point of LMAX Disruptor was the stable latency - but the multi producer scenario will probably always be a bit trickier in this regard, due to the sequence guarantees and high contention on the producers side.
 ![throughput](throughput.png)
-
-The first run results in about ~8,5M events/second while the faster comes in at ~10M events/second. The JIT optimized code therefore results in about 15% speedup. I think that the speedup is rather modest due to the fact, that the LMAX Disruptor (and the workload itself) is designed with mechanical sympathy in mind, there is less low hanging fruit, which the JIT compiler can pick, which can explain the rather modest speedup.
