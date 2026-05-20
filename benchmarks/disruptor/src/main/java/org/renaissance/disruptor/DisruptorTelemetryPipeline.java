@@ -33,7 +33,7 @@ import static org.renaissance.BenchmarkResult.Validators.*;
 @Summary("High-throughput telemetry trend analysis pipeline.")
 @Licenses(License.APACHE2)
 @Repetitions(30)
-@Parameter(name = "events_per_producer", defaultValue = "1000000", summary = "Number of events to produce per producer thread. (At least 100k)")
+@Parameter(name = "events_per_producer", defaultValue = "2000000", summary = "Number of events to produce per producer thread. (At least 100k)")
 @Parameter(name = "ring_size", defaultValue = "131072", summary = "Size of the LMAX Disruptor RingBuffer (should be power of 2).")
 @Parameter(name = "storage_strategy", defaultValue = "sbebuffer", summary = "Storage strategy for partial events (sbebuffer, caffeine, hashmap).")
 @Configuration(name = "test", settings = {"events_per_producer = 50000"})
@@ -74,9 +74,11 @@ public final class DisruptorTelemetryPipeline implements Benchmark {
             throw new IllegalArgumentException("events_per_producer should be at least 100k");
         }
 
-        producerCount = Math.max(3, Math.min(16, Runtime.getRuntime().availableProcessors()));
-
         int producerTypesCount = PartialEventType.values().length;
+        int handlerCount = 4; // assembler, anomaly detector, anomaly persistence, data sample handler
+        
+        producerCount = Math.max(producerTypesCount, Math.min(16, Runtime.getRuntime().availableProcessors() - handlerCount));
+
         int producersPerType = Math.max(1, producerCount / producerTypesCount);
 
         int maxSamples = (int) ((((long) eventsPerProducer * producersPerType) / DataSampleHandler.SAMPLE_FRQCY) + 1);
